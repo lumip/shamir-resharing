@@ -52,7 +52,7 @@ mpz_class invertMultiplicative(const mpz_class& x, const mpz_class& p)
 
 mpz_class invertAdditive(const mpz_class& x, const mpz_class& p)
 {
-    return p - x;
+    return (p - (x % p)) % p;
 }
 
 std::vector<mpz_class> getRandomPolynomial(unsigned int degree, const mpz_class& p, gmp_randclass& randomGenerator, unsigned int security)
@@ -77,7 +77,6 @@ mpz_class evaluatePolynomial(unsigned int x, const std::vector<mpz_class>& coeff
     }
     return result;
 }
-
 
 std::vector< share_t > share(const mpz_class& secret, unsigned int t, unsigned int n, const mpz_class& p, gmp_randclass& randomGenerator, unsigned int security)
 {
@@ -125,10 +124,52 @@ mpz_class recover(const std::vector< share_t >& shares, const mpz_class& p)
     return secret;
 }
 
+std::vector< share_t > reshare(const std::vector< share_t >& shares, unsigned int t_old, unsigned int t_new, unsigned int n_new, const mpz_class& p, gmp_randclass& randomGenerator, unsigned int security)
+{
+    std::vector< std::vector< share_t > > randomShares;
+    randomShares.reserve(shares.size());
+    for (size_t j = 0; j < shares.size(); ++j)
+    {
+        randomShares.push_back( share(randomGenerator.get_z_bits(security) % p, t_old, n_new, p, randomGenerator, security) );
+    }
+    std::vector< share_t > maskedShares;
+    maskedShares.resize(shares.size());
+    for (size_t j = 0; j < shares.size(); ++j)
+    {
+        maskedShares[j] = shares[j];
+        mpz_class y_j = maskedShares[j].second;
+        for (size_t i = 0; i < randomShares.size(); ++i)
+        {
+            y_j = (y_j + randomShares[i][shares[j].first.get_ui() + 1].second) % p;
+        }
+        maskedShares[j].second = y_j;
+    }
+    mpz_class maskedSecret = recover(maskedShares, p);
+    gmp_printf("maskedSecret %Zx\n", maskedSecret.get_mpz_t());
+
+    std::vector< share_t > newMaskedShares = share(maskedSecret, t_new, n_new, p, randomGenerator, security);
+    std::vector< share_t > newShares;
+    newShares.resize(newMaskedShares.size());
+
+    for (size_t j = 0; j < newShares.size(); ++j)
+    {
+        newShares[j] = newMaskedShares[j];
+        mpz_class y_j = newShares[j].second;
+        size_t index = newShares[j].first.get_ui() + 1;
+        for (size_t i = 0; i < randomShares.size(); ++i)
+        {
+            mpz_class randomShare = randomShares[i][index].second;
+            y_j = (y_j + invertAdditive(randomShare, p)) % p;
+        }
+        newShares[j].second = y_j;
+    }
+    return newShares;
+}
+
 
 int main()
 {
-    const unsigned int security = 512;
+    const unsigned int security = 48;
 
     gmp_randclass randomGenerator(gmp_randinit_default);
     randomGenerator.seed(time(0));
@@ -157,6 +198,7 @@ int main()
     mpz_class secret(20160207);
     secret = secret % p;
     std::cout << "the secret is " << secret.get_str() << std::endl;
+    std::cout << "sharing as 4 out of 30" << std::endl;
 
     std::vector< share_t > shares = share(secret, 4, 30, p, randomGenerator, security);
     for (size_t i = 0; i < shares.size(); ++i)
@@ -164,19 +206,33 @@ int main()
         gmp_printf("share %Zu is %Zx\n", shares[i].first.get_mpz_t(), shares[i].second.get_mpz_t());
         //std::cout << "share " << shares[i].first.get_str() << " is " << shares[i].second.get_str() << std::endl;
     }
-    std::vector< share_t > recover_shares;
-    recover_shares.resize(4);
-    std::copy(shares.begin() + 1, shares.begin() + 5, recover_shares.begin());
+    std::vector< share_t > recoverShares;
+    recoverShares.resize(4);
+    std::copy(shares.begin() + 1, shares.begin() + 5, recoverShares.begin());
 
     std::vector<mpz_class> indices;
-    indices.resize(recover_shares.size());
-    for (unsigned int i = 0; i < recover_shares.size(); ++i)
+    indices.resize(recoverShares.size());
+    for (size_t i = 0; i < recoverShares.size(); ++i)
     {
-        indices[i] = recover_shares[i].first;
+        indices[i] = recoverShares[i].first;
     }
 
-    mpz_class recovered = recover(recover_shares, p);
+    mpz_class recovered = recover(recoverShares, p);
     std::cout << "have recovered " << recovered.get_str() << std::endl;
+
+    std::cout <<" resharing as 10 out of 40" << std::endl;
+    std::vector< share_t > newShares = reshare(recoverShares, 4, 10, 40, p, randomGenerator, security);
+    for (size_t i = 0; i < newShares.size(); ++i)
+    {
+        gmp_printf("share %Zu is %Zx\n", newShares[i].first.get_mpz_t(), newShares[i].second.get_mpz_t());
+    }
+
+    std::vector< share_t > recoverNewShares;
+    recoverNewShares.resize(10);
+    std::copy(newShares.begin() + 16, newShares.begin() + (16 + 10), recoverNewShares.begin());
+
+    mpz_class recoveredNew = recover(recoverNewShares, p);
+    std::cout << "have recovered " << recoveredNew.get_str() << std::endl;
 
     return 0;
 }
